@@ -275,13 +275,6 @@ def forwardfill_matches():
             )
 
 
-def randfill_matches():
-    """
-    Select a random timestamp and forwardfill matches from there for each player
-    """
-    pass  # TODO
-
-
 def save_match_details():
     """
     Find a match without details and look it up
@@ -369,38 +362,126 @@ class MatchImageCreator:
         )
         return hashlib.sha256(random_str.encode()).hexdigest() + ".png"
 
+    def draw_damage_bar(
+        self, d, x, y, participant_damage, max_damage, bar_width, bar_height, color, draw_from_right
+    ):
+        # Calculate the length of the participant's damage bar relative to max damage
+        participant_bar_length = (participant_damage / max_damage) * bar_width
+
+        # Draw the black background bar (max damage)
+        d.rectangle([x, y, x + bar_width, y + bar_height], fill="#000000")
+
+        # Adjust starting point for the participant's damage bar based on the side
+        if draw_from_right:
+            start_x = x + bar_width - participant_bar_length + 1
+        else:
+            start_x = x + 1
+
+        # Draw the participant's damage bar on top
+        d.rectangle([start_x, y+1, start_x + participant_bar_length -2, y + bar_height-2], fill=color)
+
     def __enter__(self):
         # Create an image with desired dimensions
         background_path = os.path.join(os.getcwd(), "background.webp")
         font_path = os.path.join(os.getcwd(), "Spiegel_TT_Bold.ttf")
         img = Image.open(background_path)
         d = ImageDraw.Draw(img)
-        fnt = ImageFont.truetype(font_path, 30)
+        fntSize = 40
+        gold = "#C89B3C"
+        black = "#000000"
+        stroke_width = 4
+        fnt = ImageFont.truetype(font_path, fntSize)
+
+        center_x = img.width // 2 - 3
+
+        # Add vertical line
+        line_y_start = 0
+        line_y_end = img.height
+        line_width = 5
+        d.line(
+            [(center_x, line_y_start), (center_x, line_y_end)],
+            fill=black,
+            width=line_width,
+        )
 
         # Define starting positions
-        start_x = 10
+        start_x_left = center_x - 10
+        start_x_right = center_x + 10
         start_y = 10
-        row_height = 40
+        row_height = fntSize + 10
 
-        # Add column headers
-        d.text((start_x, start_y), "Player Name", font=fnt, fill=(255, 255, 255))
-        d.text((start_x + 300, start_y), "K/D/A", font=fnt, fill=(255, 255, 255))
+        playerCount = len(self.matchInfo["info"]["participants"])
+        maxDamage = max(
+            [
+                p["totalDamageDealtToChampions"]
+                for p in self.matchInfo["info"]["participants"]
+            ]
+        )
+        bar_width = 200  # Width of the damage bar
+        bar_height = 20  # Height of the damage bar
 
         # Add player data
         for i, participant in enumerate(self.matchInfo["info"]["participants"]):
-            y = start_y + ((i + 1) * row_height)
-            d.text(
-                (start_x, y),
-                participant["summonerName"],
-                font=fnt,
-                fill=(255, 255, 255),
-            )
-            d.text(
-                (start_x + 300, y),
-                f"{participant['kills']}/{participant['deaths']}/{participant['assists']}",
-                font=fnt,
-                fill=(255, 255, 255),
-            )
+            y = start_y + ((i % (playerCount / 2) + 1) * 3 * row_height)
+            if i < playerCount / 2:
+                d.text(
+                    (start_x_left, y),
+                    participant["summonerName"],
+                    font=fnt,
+                    fill=gold,
+                    anchor="ra",
+                    stroke_width=stroke_width,
+                    stroke_fill=black,
+                )
+                d.text(
+                    (start_x_left, y + row_height),
+                    f"{participant['kills']}/{participant['deaths']}/{participant['assists']}",
+                    font=fnt,
+                    fill=gold,
+                    anchor="ra",
+                    stroke_width=stroke_width,
+                    stroke_fill=black,
+                )
+                self.draw_damage_bar(
+                    d,
+                    start_x_left - bar_width,
+                    y + 2 * row_height,
+                    participant["totalDamageDealtToChampions"],
+                    maxDamage,
+                    bar_width,
+                    bar_height,
+                    gold,
+                    True
+                )
+
+            else:
+                d.text(
+                    (start_x_right, y),
+                    participant["summonerName"],
+                    font=fnt,
+                    fill=gold,
+                    stroke_width=stroke_width,
+                    stroke_fill=black,
+                )
+                d.text(
+                    (start_x_right, y + row_height),
+                    f"{participant['kills']}/{participant['deaths']}/{participant['assists']}",
+                    font=fnt,
+                    fill=gold,
+                    stroke_width=stroke_width,
+                    stroke_fill=black,
+                )
+                self.draw_damage_bar(
+                    d,
+                    start_x_right,
+                    y + 2 * row_height,
+                    participant["totalDamageDealtToChampions"],
+                    maxDamage,
+                    bar_width,
+                    bar_height,
+                    gold,
+                    False
+                )
 
         # Save the image
         filename = self.create_hashed_filename()

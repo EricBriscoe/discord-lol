@@ -136,6 +136,21 @@ async def on_ready():
     print(f"{bot.user.name} has connected to Discord!")
     bot.add_cog(LolCog(bot))
 
+    with get_cursor() as c:
+        c.execute(
+            """
+            SELECT matchInfo 
+            FROM player_match_info 
+            WHERE matchInfo is not null
+            order by random() limit 1;
+            """
+        )
+        matchInfo = c.fetchone()[0]
+    with lol.MatchImageCreator(matchInfo) as imagePath:
+        with open(imagePath, "rb") as f:
+            file = discord.File(f)
+            await bot.get_channel(GAME_LOG_CHANNEL_ID).send(file=file)
+
 
 @bot.command(
     description="Register a summoner name to track", guildId=discord.Object(id=GUILD_ID)
