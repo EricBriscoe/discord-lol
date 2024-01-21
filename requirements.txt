@@ -1,0 +1,7 @@
+pillow
+psycopg2-binary
+py-cord[voice]
+py-cord[speed]
+python-dotenv
+pytz
+requests
