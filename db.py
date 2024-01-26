@@ -2,6 +2,7 @@ from contextlib import contextmanager
 import logging
 import os
 
+import aiopg
 import psycopg2
 
 

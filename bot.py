@@ -33,12 +33,12 @@ class LolCog(commands.Cog):
 
     @tasks.loop(seconds=30)
     async def save_matches(self):
-        lol.forwardfill_matches()
-        lol.backfill_matches()
+        await asyncio.to_thread(lol.forwardfill_matches)
+        await asyncio.to_thread(lol.backfill_matches)
 
-    @tasks.loop(seconds=30)
+    @tasks.loop(seconds=40)
     async def get_match_details(self):
-        lol.get_match_details()
+        await asyncio.to_thread(lol.get_match_details)
 
     @tasks.loop(seconds=60)
     async def post_match_details(self):

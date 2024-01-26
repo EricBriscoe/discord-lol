@@ -1,3 +1,4 @@
+aiopg
 pillow
 psycopg2-binary
 py-cord[voice]

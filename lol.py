@@ -218,9 +218,14 @@ def backfill_matches(puuid=None):
     timestamp = datetime.now() + timedelta(days=1)
     matches = []
     while timestamp > datetime.now() - timedelta(days=365):
-        matches += get_matches(puuid, endTime=timestamp)
+        new_matches = get_matches(puuid, endTime=timestamp)
+        if new_matches:
+            matches += new_matches
+        else:
+            logging.warn(f"Error while looking up matches before {timestamp}")
+            break
         timestamp = get_match_details(matches[-1])["info"]["gameStartTimestamp"]
-        timestamp = datetime.fromtimestamp(timestamp / 1000) - timedelta(days=1)
+        timestamp = datetime.fromtimestamp(timestamp / 1000)
 
     with get_cursor() as c:
         c.executemany(
@@ -356,6 +361,10 @@ def get_match_details(matchId=None):
             f"Saved match details of {matchId} on {datetime.fromtimestamp(match_info['info']['gameStartTimestamp'] / 1000)}"
         )
         return match_info
+    elif response.status_code == 429:
+        logging.warn(
+            f"Rate limit exceeded while looking up match: {response.status_code} - {response.text}"
+        )
     else:
         with get_cursor() as c:
             c.execute(
@@ -383,6 +392,19 @@ def find_discord_id_from_puuid(puuid):
     if retval:
         return retval[0]
 
+@cache
+def find_queue_from_id(queueId):
+    logging.info("Downloading queue info")
+    url = "https://static.developer.riotgames.com/docs/lol/queues.json"
+    # download the json file from the url above
+    r = requests.get(url)
+    if response.status_code == 200:
+        queues = response.json()
+        for queue in queues:
+            if queue["queueId"] == queueId:
+                return queue["description"]
+
+    
 
 class MatchImageCreator:
     def __init__(self, matchInfo, directory="./"):
