@@ -1,4 +1,4 @@
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 import logging
 import os
 
@@ -26,9 +26,33 @@ class DatabaseConnection:
         self.conn.close()
 
 
+class AsyncDatabaseConnection:
+    def __init__(self):
+        self.dbname = "dump"
+        self.user = "postgres"
+        self.password = os.environ.get("POSTGRES_PASSWORD")
+        self.host = "db"
+
+    async def __aenter__(self):
+        self.conn = await aiopg.connect(
+            dbname=self.dbname, user=self.user, password=self.password, host=self.host
+        )
+        return await self.conn.cursor()
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        # await self.cursor.close()
+        await self.conn.close()
+
+
 @contextmanager
 def get_cursor():
     with DatabaseConnection() as cursor:
+        yield cursor
+
+
+@asynccontextmanager
+async def get_async_cursor():
+    async with AsyncDatabaseConnection() as cursor:
         yield cursor
 
 
@@ -38,6 +62,19 @@ def bootstrap_database():
     using the reusable connection function.
     """
     with get_cursor() as c:
+        c.execute(
+            """
+            CREATE OR REPLACE FUNCTION round_timestamp()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                -- Round NEW.timestamp to the nearest minute
+                NEW.timestamp = date_trunc('hour', NEW.timestamp) + 
+                                INTERVAL '1 min' * ROUND(date_part('minute', NEW.timestamp));
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+            """
+        )
         c.execute(
             """
         CREATE TABLE IF NOT EXISTS account_info (
@@ -57,15 +94,25 @@ def bootstrap_database():
             """
         CREATE TABLE IF NOT EXISTS player_ranked_status (
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            puuid TEXT NOT NULL,
+            leagueId TEXT,
+            summonerId TEXT,
+            summonerName TEXT,
+            queueType TEXT,
             tier TEXT,
             rank TEXT,
-            leaguePoints BIGINT,
-            wins BIGINT,
-            losses BIGINT,
-            PRIMARY KEY (timestamp, puuid),
-            FOREIGN KEY (puuid) REFERENCES account_info (puuid)
-        )
+            leaguePoints INT,
+            wins INT,
+            losses INT,
+            hotStreak BOOLEAN,
+            veteran BOOLEAN,
+            freshBlood BOOLEAN,
+            inactive BOOLEAN,
+            miniSeries JSON,
+            PRIMARY KEY (timestamp, summonerId, queueType)
+        );
+        CREATE OR REPLACE TRIGGER round_timestamp_before_insert
+        BEFORE INSERT ON player_ranked_status
+        FOR EACH ROW EXECUTE FUNCTION round_timestamp();
         """
         )
         c.execute(

@@ -11,7 +11,8 @@ from dotenv import load_dotenv
 import pytz
 
 import lol
-from db import get_cursor
+from db import get_cursor, get_async_cursor
+from dankutil import roman_to_int
 
 load_dotenv()
 
@@ -45,8 +46,8 @@ class LolCog(commands.Cog):
         logging.info("Searching for matches to post")
         channel = self.bot.get_channel(GAME_LOG_CHANNEL_ID)
 
-        with get_cursor() as c:
-            c.execute(
+        async with get_async_cursor() as c:
+            await c.execute(
                 """
                 SELECT 
                     mi.matchId, 
@@ -61,10 +62,12 @@ class LolCog(commands.Cog):
                 """
             )
             logging.info(f"Found {c.rowcount} matches to post")
-            matches = c.fetchall()
+            matches = await c.fetchall()
 
         for matchId, matchInfo in matches:
-            logging.info(f"Posting match {matchId} from {datetime.fromtimestamp(matchInfo['info']['gameCreation']/1000)}")
+            logging.info(
+                f"Posting match {matchId} from {datetime.fromtimestamp(matchInfo['info']['gameCreation']/1000)}"
+            )
             start_time = lol.epoch_to_datetime(matchInfo["info"]["gameCreation"])
             central_timezone = pytz.timezone("US/Central")
             start_time = start_time.astimezone(central_timezone)
@@ -75,6 +78,14 @@ class LolCog(commands.Cog):
                 description=f"Start: {readable_start}\nDuration: {gameDuration}",
                 color=0x00FF00,
             )
+            gameMap = lol.find_queue_from_id(matchInfo["info"]["queueId"])["map"]
+            queueDescription = lol.find_queue_from_id(matchInfo["info"]["queueId"])[
+                "description"
+            ]
+            embed.add_field(
+                name=gameMap,
+                value=queueDescription,
+            )
 
             # Example of adding more fields
             team = ""
@@ -83,6 +94,14 @@ class LolCog(commands.Cog):
                 discord_id = lol.find_discord_id_from_puuid(participant["puuid"])
                 nameAddon = ""
                 if discord_id:
+                    result = await asyncio.to_thread(
+                        lol.get_summoner_rank, participant["summonerId"]
+                    )
+                    try:
+                        tier, rank = result
+                    except TypeError:
+                        tier, rank = "Unranked", None
+
                     if not participant["win"]:
                         # make the embed's color red
                         embed.color = 0xFF0000
@@ -103,7 +122,8 @@ class LolCog(commands.Cog):
                             name=name, value="------------------", inline=False
                         )
 
-                    value = f"{participant['summonerName']}{nameAddon} - {participant['championName']} - {participant['kills']}/{participant['deaths']}/{participant['assists']}"
+                    value = f"""{participant['summonerName']}{nameAddon} - {tier.title()} {roman_to_int(rank) or ''} 
+                    {participant['championName']} - {participant['kills']}/{participant['deaths']}/{participant['assists']}"""
                     embed.add_field(name="", value=value, inline=False)
                     prev_team = team
             with lol.MatchImageCreator(matchInfo) as imagePath:
@@ -111,8 +131,8 @@ class LolCog(commands.Cog):
                     file = discord.File(f)
                     embed.set_image(url=f"attachment://{imagePath}")
                     await channel.send(file=file, embed=embed)
-            with get_cursor() as c:
-                c.execute(
+            async with get_async_cursor() as c:
+                await c.execute(
                     """
                     UPDATE match_info
                     SET posted = TRUE
@@ -120,7 +140,9 @@ class LolCog(commands.Cog):
                     """,
                     (matchId,),
                 )
-            logging.debug(f"Posted match {matchId} from {datetime.fromtimestamp(matchInfo['info']['gameCreation']/1000)}")
+            logging.debug(
+                f"Posted match {matchId} from {datetime.fromtimestamp(matchInfo['info']['gameCreation']/1000)}"
+            )
 
 
 @bot.event
@@ -128,21 +150,6 @@ async def on_ready():
     print(f"{bot.user.name} has connected to Discord!")
     bot.add_cog(LolCog(bot))
     return
-
-    with get_cursor() as c:
-        c.execute(
-            """
-            SELECT matchInfo 
-            FROM match_info 
-            WHERE matchInfo is not null
-            order by random() limit 1;
-            """
-        )
-        matchInfo = c.fetchone()[0]
-    with lol.MatchImageCreator(matchInfo) as imagePath:
-        with open(imagePath, "rb") as f:
-            file = discord.File(f)
-            await bot.get_channel(GAME_LOG_CHANNEL_ID).send(file=file)
 
 
 @bot.command(
@@ -168,8 +175,10 @@ async def register(ctx, name: str, tag: str = "NA1", associated_user: str = None
 
     await ctx.respond(f"Registering {name} for {associated_user.mention}")
 
+
 @bot.command(
-    description="Deregister a summoner name to track", guildId=discord.Object(id=GUILD_ID)
+    description="Deregister a summoner name to track",
+    guildId=discord.Object(id=GUILD_ID),
 )
 async def deregister(ctx, name: str, tag: str = "NA1"):
     account_info = lol.summoner_lookup(name, tag=tag, tracked=True)
@@ -185,6 +194,7 @@ async def deregister(ctx, name: str, tag: str = "NA1"):
         )
 
     await ctx.respond(f"Deregistered {name}")
+
 
 async def get_user_from_mention(discord_client, mention):
     # Extract the user ID from the mention string

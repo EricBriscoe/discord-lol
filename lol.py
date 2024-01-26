@@ -14,7 +14,6 @@ import requests
 
 from db import get_cursor
 
-
 load_dotenv()
 
 RIOT_API_KEY = os.environ.get("RIOT_API_KEY")
@@ -285,7 +284,7 @@ def forwardfill_matches():
             f"Found {len(new_matches)} new matches for {get_name_from_puuid(puuid[0])}"
         )
         matches += new_matches
-    
+
     with get_cursor() as c:
         c.executemany(
             """
@@ -392,19 +391,85 @@ def find_discord_id_from_puuid(puuid):
     if retval:
         return retval[0]
 
+
 @cache
 def find_queue_from_id(queueId):
     logging.info("Downloading queue info")
     url = "https://static.developer.riotgames.com/docs/lol/queues.json"
     # download the json file from the url above
     r = requests.get(url)
-    if response.status_code == 200:
-        queues = response.json()
+    if r.status_code == 200:
+        queues = r.json()
         for queue in queues:
             if queue["queueId"] == queueId:
-                return queue["description"]
+                return queue
 
-    
+
+def get_summoner_rank(summonerId, queue="RANKED_SOLO_5x5"):
+    """
+    Check to see if the most recently stored rank was in the last minute
+    and if so, return that rank. Otherwise, ping the API and store the new rank.
+    """
+    logging.debug(f"Getting rank for {summonerId}")
+    with get_cursor() as c:
+        c.execute(
+            """
+            SELECT timestamp, tier, rank
+            FROM player_ranked_status
+            WHERE summonerId = %s AND queueType = %s
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """,
+            (summonerId, queue),
+        )
+        if c.rowcount > 0:
+            timestamp, tier, rank = c.fetchone()
+            if timestamp > datetime.now() - timedelta(minutes=1):
+                logging.debug(f"Found rank for {summonerId} in the database")
+                return tier, rank
+
+    url = f"{RIOT_API_BASE_URL}/lol/league/v4/entries/by-summoner/{summonerId}"
+    headers = {"X-Riot-Token": RIOT_API_KEY}
+    response = requests.get(url, headers=headers)
+    if response.status_code == 200:
+        league_entries = response.json()
+        logging.debug(f"Found {league_entries} league entries for {summonerId}")
+        with get_cursor() as c:
+            c.executemany(
+                """
+                INSERT INTO player_ranked_status (
+                    leagueId, summonerId, summonerName, queueType, tier, rank,
+                    leaguePoints, wins, losses, hotStreak, veteran, freshBlood,
+                    inactive, miniSeries
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (timestamp, summonerId, queueType) DO NOTHING
+                """,
+                [
+                    (
+                        league_entry["leagueId"],
+                        league_entry["summonerId"],
+                        league_entry["summonerName"],
+                        league_entry["queueType"],
+                        league_entry["tier"],
+                        league_entry["rank"],
+                        league_entry["leaguePoints"],
+                        league_entry["wins"],
+                        league_entry["losses"],
+                        league_entry["hotStreak"],
+                        league_entry["veteran"],
+                        league_entry["freshBlood"],
+                        league_entry["inactive"],
+                        json.dumps(league_entry.get("miniSeries")),
+                    )
+                    for league_entry in league_entries
+                ],
+            )
+        for league_entry in league_entries:
+            if league_entry["queueType"] == queue:
+                logging.debug(f"Found rank for {summonerId} in the API")
+                return league_entry["tier"], league_entry["rank"]
+        logging.debug(f"No rank found for {summonerId}")
+
 
 class MatchImageCreator:
     def __init__(self, matchInfo, directory="./"):
@@ -419,7 +484,16 @@ class MatchImageCreator:
         return hashlib.sha256(random_str.encode()).hexdigest() + ".png"
 
     def draw_damage_bar(
-        self, d, x, y, participant_damage, max_damage, bar_width, bar_height, color, draw_from_right
+        self,
+        d,
+        x,
+        y,
+        participant_damage,
+        max_damage,
+        bar_width,
+        bar_height,
+        color,
+        draw_from_right,
     ):
         # Calculate the length of the participant's damage bar relative to max damage
         participant_bar_length = (participant_damage / max_damage) * bar_width
@@ -434,7 +508,10 @@ class MatchImageCreator:
             start_x = x + 1
 
         # Draw the participant's damage bar on top
-        d.rectangle([start_x, y+1, start_x + participant_bar_length -2, y + bar_height-2], fill=color)
+        d.rectangle(
+            [start_x, y + 1, start_x + participant_bar_length - 2, y + bar_height - 2],
+            fill=color,
+        )
 
     def __enter__(self):
         # Create an image with desired dimensions
@@ -507,7 +584,7 @@ class MatchImageCreator:
                     bar_width,
                     bar_height,
                     gold,
-                    True
+                    True,
                 )
 
             else:
@@ -536,7 +613,7 @@ class MatchImageCreator:
                     bar_width,
                     bar_height,
                     gold,
-                    False
+                    False,
                 )
 
         # Save the image
