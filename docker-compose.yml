@@ -15,7 +15,7 @@ services:
     build: .
     depends_on:
       - db    
-    # restart: always
+    restart: always
 
 volumes:
   pgdata:

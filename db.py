@@ -47,7 +47,8 @@ def bootstrap_database():
             id TEXT,
             puuid TEXT PRIMARY KEY,
             summonerLevel BIGINT,
-            tracked BOOLEAN DEFAULT FALSE
+            tracked BOOLEAN DEFAULT FALSE,
+            lastUpdated TIMESTAMP DEFAULT '1900-01-01'
         )
         """
         )
@@ -68,13 +69,11 @@ def bootstrap_database():
         )
         c.execute(
             """
-        CREATE TABLE IF NOT EXISTS player_match_info (
-            puuid TEXT NOT NULL,
+        CREATE TABLE IF NOT EXISTS match_info (
             matchId TEXT PRIMARY KEY,
             matchInfo JSON,
             gameStartTimestamp TIMESTAMP,
-            posted BOOLEAN DEFAULT FALSE,
-            FOREIGN KEY (puuid) REFERENCES account_info (puuid)
+            posted BOOLEAN DEFAULT FALSE
         )
         """
         )

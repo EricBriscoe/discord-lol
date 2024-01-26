@@ -1,5 +1,5 @@
 import asyncio
-from datetime import timedelta
+from datetime import datetime, timedelta
 import json
 import logging
 import os
@@ -28,20 +28,19 @@ class LolCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.save_matches.start()
-        self.save_match_details.start()
+        self.get_match_details.start()
         self.post_match_details.start()
 
-    @tasks.loop(seconds=200)
+    @tasks.loop(seconds=30)
     async def save_matches(self):
-        lol.backfill_matches()
-        await asyncio.sleep(15)
         lol.forwardfill_matches()
-
-    @tasks.loop(seconds=8)
-    async def save_match_details(self):
-        lol.save_match_details()
+        lol.backfill_matches()
 
     @tasks.loop(seconds=30)
+    async def get_match_details(self):
+        lol.get_match_details()
+
+    @tasks.loop(seconds=60)
     async def post_match_details(self):
         logging.info("Searching for matches to post")
         channel = self.bot.get_channel(GAME_LOG_CHANNEL_ID)
@@ -50,52 +49,45 @@ class LolCog(commands.Cog):
             c.execute(
                 """
                 SELECT 
-                  ai.name, 
-                  pmi.puuid, 
-                  pmi.matchId, 
-                  pmi.matchInfo
+                    mi.matchId, 
+                    mi.matchInfo
                 FROM 
-                    player_match_info pmi
-                JOIN account_info ai
-                  ON ai.puuid = pmi.puuid
+                    match_info mi
                 WHERE
-                    pmi.gameStartTimestamp = (
-                        SELECT MIN(gameStartTimestamp)
-                        FROM player_match_info
-                        WHERE puuid = pmi.puuid 
-                        AND gameStartTimestamp > now() - interval '1 day'
-                        AND posted = FALSE
-                    )
-                ORDER BY pmi.gameStartTimestamp asc;
+                    mi.gameStartTimestamp > now() - interval '6 days'
+                    and posted = FALSE
+                ORDER BY 
+                    mi.matchId asc;
                 """
             )
             logging.info(f"Found {c.rowcount} matches to post")
+            matches = c.fetchall()
 
-            for name, puuid, matchId, matchInfo in c.fetchall():
-                logging.info(f"Posting match {matchId} for {name}")
-                start_time = lol.epoch_to_datetime(matchInfo["info"]["gameCreation"])
-                central_timezone = pytz.timezone("US/Central")
-                start_time = start_time.astimezone(central_timezone)
-                readable_start = start_time.strftime("%B %d, %Y at %I:%M:%S %p %Z")
-                gameDuration = timedelta(seconds=matchInfo["info"]["gameDuration"])
-                embed = discord.Embed(
-                    title="MATCH UPDATE!",
-                    description=f"Start: {readable_start}\nDuration: {gameDuration}",
-                    color=0x00FF00,
-                )
+        for matchId, matchInfo in matches:
+            logging.info(f"Posting match {matchId} from {datetime.fromtimestamp(matchInfo['info']['gameCreation']/1000)}")
+            start_time = lol.epoch_to_datetime(matchInfo["info"]["gameCreation"])
+            central_timezone = pytz.timezone("US/Central")
+            start_time = start_time.astimezone(central_timezone)
+            readable_start = start_time.strftime("%B %d, %Y at %I:%M:%S %p %Z")
+            gameDuration = timedelta(seconds=matchInfo["info"]["gameDuration"])
+            embed = discord.Embed(
+                title="MATCH UPDATE!",
+                description=f"Start: {readable_start}\nDuration: {gameDuration}",
+                color=0x00FF00,
+            )
 
-                # Example of adding more fields
-                team = ""
-                prev_team = None
-                for participant in matchInfo["info"]["participants"]:
-                    discord_id = lol.find_discord_id_from_puuid(participant["puuid"])
-                    nameAddon = ""
-                    if discord_id:
-                        if not participant["win"]:
-                            # make the embed's color red
-                            embed.color = 0xFF0000
-                        discord_user = await bot.fetch_user(discord_id)
-                        nameAddon = f" ({discord_user.mention})"
+            # Example of adding more fields
+            team = ""
+            prev_team = None
+            for participant in matchInfo["info"]["participants"]:
+                discord_id = lol.find_discord_id_from_puuid(participant["puuid"])
+                nameAddon = ""
+                if discord_id:
+                    if not participant["win"]:
+                        # make the embed's color red
+                        embed.color = 0xFF0000
+                    discord_user = await bot.fetch_user(discord_id)
+                    nameAddon = f" ({discord_user.mention})"
 
                     if participant["teamId"] == 100:
                         team = "Blue"
@@ -114,33 +106,34 @@ class LolCog(commands.Cog):
                     value = f"{participant['summonerName']}{nameAddon} - {participant['championName']} - {participant['kills']}/{participant['deaths']}/{participant['assists']}"
                     embed.add_field(name="", value=value, inline=False)
                     prev_team = team
-                with lol.MatchImageCreator(matchInfo) as imagePath:
-                    with open(imagePath, "rb") as f:
-                        file = discord.File(f)
-                        embed.set_image(url=f"attachment://{imagePath}")
-                        await channel.send(file=file, embed=embed)
-                # await channel.send(embed=embed)
-
+            with lol.MatchImageCreator(matchInfo) as imagePath:
+                with open(imagePath, "rb") as f:
+                    file = discord.File(f)
+                    embed.set_image(url=f"attachment://{imagePath}")
+                    await channel.send(file=file, embed=embed)
+            with get_cursor() as c:
                 c.execute(
                     """
-                    UPDATE player_match_info
+                    UPDATE match_info
                     SET posted = TRUE
-                    WHERE puuid = %s
+                    WHERE matchId = %s
                     """,
-                    (puuid,),
+                    (matchId,),
                 )
+            logging.debug(f"Posted match {matchId} from {datetime.fromtimestamp(matchInfo['info']['gameCreation']/1000)}")
 
 
 @bot.event
 async def on_ready():
     print(f"{bot.user.name} has connected to Discord!")
     bot.add_cog(LolCog(bot))
+    return
 
     with get_cursor() as c:
         c.execute(
             """
             SELECT matchInfo 
-            FROM player_match_info 
+            FROM match_info 
             WHERE matchInfo is not null
             order by random() limit 1;
             """
@@ -175,6 +168,23 @@ async def register(ctx, name: str, tag: str = "NA1", associated_user: str = None
 
     await ctx.respond(f"Registering {name} for {associated_user.mention}")
 
+@bot.command(
+    description="Deregister a summoner name to track", guildId=discord.Object(id=GUILD_ID)
+)
+async def deregister(ctx, name: str, tag: str = "NA1"):
+    account_info = lol.summoner_lookup(name, tag=tag, tracked=True)
+    name = account_info["name"]
+    puuid = account_info["puuid"]
+    with get_cursor() as c:
+        c.execute(
+            """
+            DELETE FROM summoner_discord_association
+            WHERE puuid = %s
+            """,
+            (puuid,),
+        )
+
+    await ctx.respond(f"Deregistered {name}")
 
 async def get_user_from_mention(discord_client, mention):
     # Extract the user ID from the mention string

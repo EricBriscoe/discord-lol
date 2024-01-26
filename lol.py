@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import cache
 import hashlib
 import json
@@ -195,45 +195,51 @@ def get_matches(
         )
 
 
-def backfill_matches():
+def backfill_matches(puuid=None):
     """
-    Do 1 api call per player and backfill their matches
+    Backfill matches for a given player or the player with the oldest lastUpdated timestamp
     """
     logging.info("Starting backfill_matches")
-    with get_cursor() as c:
-        c.execute(
-            """
-            SELECT puuid FROM account_info WHERE tracked = TRUE
-            """
-        )
-        for puuid in c.fetchall():
+    if puuid == None:
+        with get_cursor() as c:
             c.execute(
                 """
-                SELECT MIN(gameStartTimestamp) FROM player_match_info
-                WHERE EXISTS (
-                    SELECT 1
-                    FROM json_array_elements(matchInfo->'info'->'participants') as participant
-                    WHERE participant->>'puuid' = %s
-                ) AND gameStartTimestamp > '2000-01-01'
-                """,
-                (puuid[0],),
-            )
-            min_timestamp = c.fetchone()[0]
-            logging.info(f"min_timestamp: {min_timestamp}")
-
-            matches = get_matches(puuid, endTime=min_timestamp)
-            c.executemany(
+                SELECT puuid
+                FROM account_info
+                WHERE tracked = TRUE
+                ORDER BY lastUpdated ASC
+                LIMIT 1
                 """
-                INSERT INTO player_match_info (puuid, matchId)
-                VALUES (%s, %s)
-                ON CONFLICT (matchId) DO NOTHING
-                """,
-                [(puuid[0], matchId) for matchId in matches],
             )
+            if c.rowcount == 0:
+                return
+            puuid = c.fetchone()[0]
 
-            logging.info(
-                f"Saved {len(matches)} matches for {get_name_from_puuid(puuid[0])}"
-            )
+    timestamp = datetime.now() + timedelta(days=1)
+    matches = []
+    while timestamp > datetime.now() - timedelta(days=365):
+        matches += get_matches(puuid, endTime=timestamp)
+        timestamp = get_match_details(matches[-1])["info"]["gameStartTimestamp"]
+        timestamp = datetime.fromtimestamp(timestamp / 1000) - timedelta(days=1)
+
+    with get_cursor() as c:
+        c.executemany(
+            """
+            INSERT INTO match_info (matchId)
+            VALUES (%s)
+            ON CONFLICT (matchId) DO NOTHING
+            """,
+            [(matchId,) for matchId in matches],
+        )
+        c.execute(
+            """
+            UPDATE account_info
+            SET lastUpdated = now()
+            WHERE puuid = %s
+            """,
+            (puuid,),
+        )
+    logging.info(f"Saved {len(matches)} matches for {get_name_from_puuid(puuid)}")
 
 
 def forwardfill_matches():
@@ -247,10 +253,16 @@ def forwardfill_matches():
             SELECT puuid FROM account_info WHERE tracked = TRUE
             """
         )
-        for puuid in c.fetchall():
+        update_puuids = c.fetchall()
+        if update_puuids == []:
+            return
+
+    matches = []
+    for puuid in update_puuids:
+        with get_cursor() as c:
             c.execute(
                 """
-                SELECT MAX(gameStartTimestamp) FROM player_match_info
+                SELECT MAX(gameStartTimestamp) FROM match_info
                 WHERE EXISTS (
                     SELECT 1
                     FROM json_array_elements(matchInfo->'info'->'participants') as participant
@@ -259,59 +271,80 @@ def forwardfill_matches():
                 """,
                 (puuid[0],),
             )
-            max_timestamp = c.fetchone()[0]
+            try:
+                max_timestamp = c.fetchone()[0] + timedelta(minutes=5)
+            except TypeError:
+                continue
+        new_matches = get_matches(puuid, startTime=max_timestamp)
+        logging.info(
+            f"Found {len(new_matches)} new matches for {get_name_from_puuid(puuid[0])}"
+        )
+        matches += new_matches
+    
+    with get_cursor() as c:
+        c.executemany(
+            """
+            INSERT INTO match_info (matchId)
+            VALUES (%s)
+            ON CONFLICT (matchId) DO NOTHING
+            """,
+            [(matchId,) for matchId in matches],
+        )
+    if not matches:
+        logging.info("No new matches found")
 
-            matches = get_matches(puuid, startTime=max_timestamp)
-            c.executemany(
+
+def get_match_details(matchId=None):
+    """
+    Retrieve match details from the database and update the database if necessary
+    If no matchId is provided, get the most recent match and update the database
+    """
+    if matchId == None:
+        with get_cursor() as c:
+            c.execute(
                 """
-                INSERT INTO player_match_info (puuid, matchId)
-                VALUES (%s, %s)
-                ON CONFLICT (matchId) DO NOTHING
-                """,
-                [(puuid[0], matchId) for matchId in matches],
+                SELECT matchId FROM match_info WHERE matchInfo is null
+                ORDER BY matchId DESC
+                LIMIT 1
+                """
             )
-            logging.info(
-                f"Saved {len(matches)} matches for {get_name_from_puuid(puuid[0])}"
-            )
+            if c.rowcount == 0:
+                return
+            matchId = c.fetchone()[0]
 
-
-def save_match_details():
-    """
-    Find a match without details and look it up
-    """
+    logging.debug(f"Searching db for match: {matchId}")
     with get_cursor() as c:
         c.execute(
             """
-            SELECT puuid, matchId
-            FROM player_match_info
-            WHERE matchInfo IS NULL
-            ORDER BY matchId DESC
-            """
+            SELECT matchInfo FROM match_info
+            WHERE matchId = %s
+                AND matchInfo is not null
+            """,
+            (matchId,),
         )
-        to_update = c.fetchone()
-    if to_update:
-        puuid, matchId = to_update
-    else:
-        return
+        if c.rowcount > 0:
+            logging.debug(f"Found match details for {matchId} in the database")
+            return c.fetchone()[0]
 
     url = f"https://americas.api.riotgames.com/lol/match/v5/matches/{matchId}"
+    logging.debug(f"Not found in database, pinging url: {url}")
     headers = {"X-Riot-Token": RIOT_API_KEY}
     response = requests.get(url, headers=headers)
 
     if response.status_code == 200:
+        logging.debug(f"Found match details for {matchId}")
         match_info = response.json()
         # Store the account information in the database
         with get_cursor() as c:
             c.execute(
                 """
-                INSERT INTO player_match_info (puuid, matchId, matchInfo, gameStartTimestamp)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO match_info (matchId, matchInfo, gameStartTimestamp)
+                VALUES (%s, %s, %s)
                 ON CONFLICT (matchId) DO UPDATE SET
                     matchInfo = excluded.matchInfo,
                     gameStartTimestamp = excluded.gameStartTimestamp
             """,
                 (
-                    puuid,
                     matchId,
                     json.dumps(match_info),
                     datetime.fromtimestamp(
@@ -320,13 +353,14 @@ def save_match_details():
                 ),
             )
         logging.info(
-            f"Saved match details of {matchId} for {get_name_from_puuid(puuid)}"
+            f"Saved match details of {matchId} on {datetime.fromtimestamp(match_info['info']['gameStartTimestamp'] / 1000)}"
         )
+        return match_info
     else:
         with get_cursor() as c:
             c.execute(
                 """
-                UPDATE player_match_info
+                UPDATE match_info
                 SET matchInfo = '{"error": "error"}', posted = TRUE
                 WHERE matchId = %s
                 """,
@@ -435,7 +469,7 @@ class MatchImageCreator:
                 )
                 d.text(
                     (start_x_left, y + row_height),
-                    f"{participant['kills']}/{participant['deaths']}/{participant['assists']}",
+                    f"{participant['championName']} - {participant['kills']}/{participant['deaths']}/{participant['assists']}",
                     font=fnt,
                     fill=gold,
                     anchor="ra",
@@ -465,7 +499,7 @@ class MatchImageCreator:
                 )
                 d.text(
                     (start_x_right, y + row_height),
-                    f"{participant['kills']}/{participant['deaths']}/{participant['assists']}",
+                    f"{participant['kills']}/{participant['deaths']}/{participant['assists']} - {participant['championName']}",
                     font=fnt,
                     fill=gold,
                     stroke_width=stroke_width,
