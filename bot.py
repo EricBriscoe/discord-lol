@@ -41,7 +41,7 @@ class LolCog(commands.Cog):
     async def backfill_matches(self):
         await asyncio.to_thread(lol.backfill_matches)
 
-    @tasks.loop(seconds=40)
+    @tasks.loop(seconds=10)
     async def get_match_details(self):
         await asyncio.to_thread(lol.get_match_details)
 
