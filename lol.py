@@ -287,7 +287,7 @@ def forwardfill_matches():
     matches = []
     for puuid, endTimestamp in update_puuids:
         endTimestamp = datetime.fromtimestamp(endTimestamp / 1000) + timedelta(
-            seconds=1
+            seconds=60
         )
         new_matches = get_matches(puuid, startTime=endTimestamp)
         matches += new_matches
