@@ -260,36 +260,31 @@ def forwardfill_matches():
     with get_cursor() as c:
         c.execute(
             """
-            SELECT puuid FROM account_info WHERE tracked = TRUE
+            SELECT ai.puuid, max(mi.gameStartTimestamp) as timestamp 
+            FROM account_info ai
+            JOIN LATERAL (
+                SELECT mi.gameStartTimestamp
+                FROM match_info mi, jsonb_array_elements(mi.matchInfo->'info'->'participants') AS p
+                WHERE p->>'puuid' = ai.puuid
+                AND mi.matchInfo IS NOT NULL
+            ) mi ON true
+            WHERE ai.tracked = TRUE
+            GROUP BY ai.puuid
             ORDER BY random()
             LIMIT 100
             """
         )
         update_puuids = c.fetchall()
         if update_puuids == []:
+            logging.info("No players to update")
             return
 
     matches = []
-    for puuid in update_puuids:
-        with get_cursor() as c:
-            c.execute(
-                """
-                SELECT MAX(gameStartTimestamp) FROM match_info
-                WHERE EXISTS (
-                    SELECT 1
-                    FROM json_array_elements(matchInfo->'info'->'participants') as participant
-                    WHERE participant->>'puuid' = %s
-                )
-                """,
-                (puuid[0],),
-            )
-            try:
-                max_timestamp = c.fetchone()[0] + timedelta(minutes=5)
-            except TypeError:
-                continue
-        new_matches = get_matches(puuid, startTime=max_timestamp)
+    for puuid, timestamp in update_puuids:
+        timestamp += timedelta(minutes=5)
+        new_matches = get_matches(puuid, startTime=timestamp)
         logging.info(
-            f"Found {len(new_matches)} new matches for {get_name_from_puuid(puuid[0])}"
+            f"Found {len(new_matches)} new matches for {get_name_from_puuid(puuid) or puuid}"
         )
         matches += new_matches
 

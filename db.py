@@ -119,7 +119,7 @@ def bootstrap_database():
             """
         CREATE TABLE IF NOT EXISTS match_info (
             matchId TEXT PRIMARY KEY,
-            matchInfo JSON,
+            matchInfo JSONB,
             gameStartTimestamp TIMESTAMP,
             posted BOOLEAN DEFAULT FALSE
         )
