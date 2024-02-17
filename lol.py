@@ -150,6 +150,9 @@ def epoch_to_datetime(epoch_seconds):
 # Function to convert to epoch seconds if not None and is datetime
 # dt strings formatted like 2024-01-04%2021:41:55.660000
 def datetime_to_epoch(dt):
+    if isinstance(dt, int):
+        return dt
+
     if isinstance(dt, str):
         dt = dt.replace("%20", " ")
         dt = datetime.strptime(dt, "%Y-%m-%d %H:%M:%S.%f")
@@ -260,10 +263,12 @@ def forwardfill_matches():
     with get_cursor() as c:
         c.execute(
             """
-            SELECT ai.puuid, max(mi.gameStartTimestamp) as timestamp 
+            SELECT ai.puuid, max(mi.endTimestamp)
             FROM account_info ai
             JOIN LATERAL (
-                SELECT mi.gameStartTimestamp
+                SELECT 
+                    mi.gameStartTimestamp,
+                    (mi.matchInfo->'info'->'gameEndTimestamp')::bigint as endTimestamp
                 FROM match_info mi, jsonb_array_elements(mi.matchInfo->'info'->'participants') AS p
                 WHERE p->>'puuid' = ai.puuid
                 AND mi.matchInfo IS NOT NULL
@@ -280,12 +285,11 @@ def forwardfill_matches():
             return
 
     matches = []
-    for puuid, timestamp in update_puuids:
-        timestamp += timedelta(minutes=5)
-        new_matches = get_matches(puuid, startTime=timestamp)
-        logging.info(
-            f"Found {len(new_matches)} new matches for {get_name_from_puuid(puuid) or puuid}"
+    for puuid, endTimestamp in update_puuids:
+        endTimestamp = datetime.fromtimestamp(endTimestamp / 1000) + timedelta(
+            seconds=1
         )
+        new_matches = get_matches(puuid, startTime=endTimestamp)
         matches += new_matches
 
     with get_cursor() as c:
@@ -297,6 +301,7 @@ def forwardfill_matches():
             """,
             [(matchId,) for matchId in matches],
         )
+        logging.info(f"Saved {len(matches)} new matches")
     if not matches:
         logging.info("No new matches found")
 
@@ -310,7 +315,8 @@ def get_match_details(matchId=None):
         with get_cursor() as c:
             c.execute(
                 """
-                SELECT matchId FROM match_info WHERE matchInfo is null
+                SELECT matchId FROM match_info
+                WHERE matchInfo is null
                 ORDER BY matchId DESC
                 LIMIT 1
                 """
