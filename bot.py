@@ -150,7 +150,9 @@ class LolCog(commands.Cog):
                 f"Posted match {matchId} from {datetime.fromtimestamp(matchInfo['info']['gameCreation']/1000)}"
             )
 
+
 bot.add_cog(LolCog(bot))
+
 
 @bot.event
 async def on_ready():

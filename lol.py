@@ -518,7 +518,7 @@ class MatchImageCreator:
                 start_x,
                 y + 1,
                 max(start_x + participant_bar_length - 2, start_x),
-                max(y + bar_height - 2, y+1),
+                max(y + bar_height - 2, y + 1),
             ],
             fill=color,
         )
