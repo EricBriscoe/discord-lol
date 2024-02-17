@@ -216,14 +216,17 @@ def backfill_matches(puuid=None):
 
     timestamp = datetime.now() + timedelta(days=1)
     matches = []
-    while timestamp > datetime.now() - timedelta(days=365):
+    while timestamp > datetime.now() - timedelta(days=800):
         new_matches = get_matches(puuid, endTime=timestamp)
         if new_matches:
             matches += new_matches
         else:
-            logging.warn(f"Error while looking up matches before {timestamp}")
+            logging.info(f"Error while looking up matches before {timestamp}")
             break
-        timestamp = get_match_details(matches[-1])["info"]["gameStartTimestamp"]
+        try:
+            timestamp = get_match_details(matches[-1])["info"]["gameStartTimestamp"]
+        except (TypeError, KeyError):
+            break
         timestamp = datetime.fromtimestamp(timestamp / 1000)
 
     with get_cursor() as c:
@@ -243,7 +246,10 @@ def backfill_matches(puuid=None):
             """,
             (puuid,),
         )
-    logging.info(f"Saved {len(matches)} matches for {get_name_from_puuid(puuid)}")
+    try:
+        logging.info(f"Saved {len(matches)} matches for {get_name_from_puuid(puuid)}")
+    except TypeError:
+        pass
 
 
 def forwardfill_matches():
@@ -255,6 +261,8 @@ def forwardfill_matches():
         c.execute(
             """
             SELECT puuid FROM account_info WHERE tracked = TRUE
+            ORDER BY random()
+            LIMIT 100
             """
         )
         update_puuids = c.fetchall()
@@ -496,10 +504,12 @@ class MatchImageCreator:
         draw_from_right,
     ):
         # Calculate the length of the participant's damage bar relative to max damage
-        participant_bar_length = (participant_damage / max_damage) * bar_width
+        participant_bar_length = (participant_damage / max(max_damage, 1)) * bar_width
 
         # Draw the black background bar (max damage)
-        d.rectangle([x, y, x + bar_width, y + bar_height], fill="#000000")
+        d.rectangle(
+            [x, y, max(x + bar_width, x), max(y + bar_height, y)], fill="#000000"
+        )
 
         # Adjust starting point for the participant's damage bar based on the side
         if draw_from_right:
@@ -509,7 +519,12 @@ class MatchImageCreator:
 
         # Draw the participant's damage bar on top
         d.rectangle(
-            [start_x, y + 1, start_x + participant_bar_length - 2, y + bar_height - 2],
+            [
+                start_x,
+                y + 1,
+                max(start_x + participant_bar_length - 2, start_x),
+                max(y + bar_height - 2, y+1),
+            ],
             fill=color,
         )
 
@@ -521,6 +536,7 @@ class MatchImageCreator:
         d = ImageDraw.Draw(img)
         fntSize = 40
         gold = "#C89B3C"
+        red = "#8B0000"
         black = "#000000"
         stroke_width = 4
         fnt = ImageFont.truetype(font_path, fntSize)
@@ -583,7 +599,7 @@ class MatchImageCreator:
                     maxDamage,
                     bar_width,
                     bar_height,
-                    gold,
+                    red,
                     True,
                 )
 
@@ -612,7 +628,7 @@ class MatchImageCreator:
                     maxDamage,
                     bar_width,
                     bar_height,
-                    gold,
+                    red,
                     False,
                 )
 

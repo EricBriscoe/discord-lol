@@ -28,13 +28,17 @@ GUILD_ID = int(os.environ.get("GUILD_ID"))
 class LolCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.save_matches.start()
+        self.forwardfill_matches.start()
+        self.backfill_matches.start()
         self.get_match_details.start()
         self.post_match_details.start()
 
-    @tasks.loop(seconds=30)
-    async def save_matches(self):
+    @tasks.loop(seconds=120)
+    async def forwardfill_matches(self):
         await asyncio.to_thread(lol.forwardfill_matches)
+
+    @tasks.loop(seconds=1200)
+    async def backfill_matches(self):
         await asyncio.to_thread(lol.backfill_matches)
 
     @tasks.loop(seconds=40)
@@ -45,6 +49,8 @@ class LolCog(commands.Cog):
     async def post_match_details(self):
         logging.info("Searching for matches to post")
         channel = self.bot.get_channel(GAME_LOG_CHANNEL_ID)
+        if not channel:
+            return
 
         async with get_async_cursor() as c:
             await c.execute(
@@ -144,12 +150,11 @@ class LolCog(commands.Cog):
                 f"Posted match {matchId} from {datetime.fromtimestamp(matchInfo['info']['gameCreation']/1000)}"
             )
 
+bot.add_cog(LolCog(bot))
 
 @bot.event
 async def on_ready():
-    print(f"{bot.user.name} has connected to Discord!")
-    bot.add_cog(LolCog(bot))
-    return
+    logging.info(f"{bot.user.name} has connected to Discord!")
 
 
 @bot.command(
@@ -184,10 +189,18 @@ async def deregister(ctx, name: str, tag: str = "NA1"):
     account_info = lol.summoner_lookup(name, tag=tag, tracked=True)
     name = account_info["name"]
     puuid = account_info["puuid"]
-    with get_cursor() as c:
-        c.execute(
+    with get_async_cursor() as c:
+        await c.execute(
             """
             DELETE FROM summoner_discord_association
+            WHERE puuid = %s
+            """,
+            (puuid,),
+        )
+        await c.execute(
+            """
+            UPDATE account_info
+            SET tracked = FALSE
             WHERE puuid = %s
             """,
             (puuid,),
