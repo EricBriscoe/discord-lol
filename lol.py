@@ -347,6 +347,9 @@ def get_match_details(matchId=None):
     if response.status_code == 200:
         logging.debug(f"Found match details for {matchId}")
         match_info = response.json()
+        timestamp = datetime.fromtimestamp(
+            match_info["info"]["gameStartTimestamp"] / 1000
+        )
         # Store the account information in the database
         with get_cursor() as c:
             c.execute(
@@ -360,13 +363,11 @@ def get_match_details(matchId=None):
                 (
                     matchId,
                     json.dumps(match_info),
-                    datetime.fromtimestamp(
-                        match_info["info"]["gameStartTimestamp"] / 1000
-                    ),
+                    timestamp,
                 ),
             )
         logging.info(
-            f"Saved match details of {matchId} on {datetime.fromtimestamp(match_info['info']['gameStartTimestamp'] / 1000)}"
+            f"Saved match details of {matchId} on {timestamp.strftime('%B %d, %Y, %I:%M:%S %p')}"
         )
         return match_info
     elif response.status_code == 429:
